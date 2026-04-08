@@ -14,7 +14,15 @@ import shutil
 from indiafilings_scraper import scrape_indiafilings
 from input_handler import get_companies
 
-app = FastAPI()
+app = FastAPI(
+    docs_url ="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+@app.get("/")
+def home():
+    return {"message": "Lead Extractor API is running"}
 
 # =========================
 # CORS

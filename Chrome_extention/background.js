@@ -7,7 +7,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     ) {
         console.log("Scraping:", tab.url);
 
-        fetch("http://127.0.0.1:8000/scrape-url", {
+        fetch("https://lead-extractor-a7l5.onrender.com/scrape-url", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"

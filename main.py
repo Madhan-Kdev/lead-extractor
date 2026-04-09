@@ -7,11 +7,11 @@ import pandas as pd
 import os
 import re
 import requests
+import time 
 from bs4 import BeautifulSoup
 import shutil
 
 from indiafilings_scraper import scrape_indiafilings
-from input_handler import get_companies
 
 app = FastAPI(
     docs_url="/docs",
@@ -208,23 +208,83 @@ async def upload_file(file: UploadFile = File(...)):
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+    
+    df = pd.read_excel(file_path)
+    df.columns = df.columns.str.strip().str.upper()
 
-    companies = get_companies(file_path)
+    #companies = get_companies(file_path)
     results = []
 
-    for i, c in enumerate(companies):
-        if i >= 25:
-            break
+    #CASE 1 URL BASED FILE 
 
-        try:
-            result = scrape_indiafilings(c["Company Name"], c["CIN"])
-            if result:
-                save_to_excel(result)
-                results.append(result)
-        except:
-            continue
+    if "URL" in df.columns:
+        urls = df["URL"].dropna().tolist()
+        print(f"Detected URL file with {len(urls)} records")
+        batch_size = 25
+        for i in range(0,len(urls),batch_size):
+            batch = urls[i:i+batch_size]
 
-    return {"processed": len(results)}
+            print(f"Processing batch {i//25 + 1}")
+            
+            for url in batch:
+                try:
+                    url = str(url).strip()
+                    
+                    if not str(url).startswith("http"):
+                        url = "https://"+ url
+
+                    result = scrape_site(url)
+
+                    if result:
+                        save_to_excel(result)
+                        results.append(result)
+                except Exception as e:
+                    print("URL Error:", e)
+                    continue
+            
+            if i + batch_size < len(urls):
+                print("Sleeping for 20 seconds")
+
+                time.sleep(20)
+
+#CASE-2 COMPANY + CIN 
+    elif "COMPANY NAME" in df.columns and "CIN" in df.columns:
+
+        companies = df.to_dict(orient = "records")
+        print(f"Detected CIN file with {len(companies)} records")
+
+        batch_size = 25
+
+        for i in range(0, len(companies),batch_size):
+            batch = companies[i:i+batch_size]
+
+            print(f"Processing batch {i//25 + 1}")
+
+            for c in batch:
+                try:
+                    result = scrape_indiafilings(
+                        c["Company Name"], c["CIN"]
+                    )
+
+                    if result:
+                        save_to_excel(result)
+                        results.append(result)
+
+                except Exception as e:
+                    print("CIN Error:",e)
+                    continue
+
+            if i + batch_size < len(companies):
+                print("Sleeping for 20 seconds")
+                time.sleep(20)
+
+    else:
+        return {"error": "Invalid file format"}
+    
+    return {
+        "processed": len(results),
+        "message": "Bulk processing completed"
+    }
 
 
 @app.get("/download")

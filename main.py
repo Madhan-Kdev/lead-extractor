@@ -10,12 +10,11 @@ import requests
 from bs4 import BeautifulSoup
 import shutil
 
-# EXISTING MODULES
 from indiafilings_scraper import scrape_indiafilings
 from input_handler import get_companies
 
 app = FastAPI(
-    docs_url ="/docs",
+    docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json"
 )
@@ -24,9 +23,7 @@ app = FastAPI(
 def home():
     return {"message": "Lead Extractor API is running"}
 
-# =========================
 # CORS
-# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,144 +34,127 @@ app.add_middleware(
 
 EXCEL_FILE = "leads.xlsx"
 
-# =========================
-# URL SCRAPER
-# =========================
+# SCRAPER (FIXED)
 def scrape_site(url):
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-        pages = [
-            url,
-            url.rstrip("/") + "/contact",
-            url.rstrip("/") + "/contact-us",
-            url.rstrip("/") + "/about",
-            url.rstrip("/") + "/about-us",
-            url.rstrip("/") + "/get-in-touch",
-            url.rstrip("/") + "/reach-us",
-        ]
+    pages = [
+        url,
+        url.rstrip("/") + "/contact",
+        url.rstrip("/") + "/contact-us",
+        url.rstrip("/") + "/contactus",
+        url.rstrip("/") + "/about",
+        url.rstrip("/") + "/about-us",
+        url.rstrip("/") + "/reach-us",
+        url.rstrip("/") + "/support",
+        url.rstrip("/") + "/get-in-touch"
+    ]
 
-        email = "not_found"
-        phone = "not_found"
-        person = "not_found"
-        description = "not_found"
-        company = ""
+    email = "not_found"
+    phone = "not_found"
+    description = ""
+    company = ""
 
-        for page in pages:
-            try:
-                res = requests.get(page, headers=headers, timeout=10)
-                soup = BeautifulSoup(res.text, "html.parser")
-                text = soup.get_text(" ", strip=True)
+    for page in pages:
+        try:
+            res = requests.get(page, headers=headers, timeout=5)
+            soup = BeautifulSoup(res.text, "html.parser")
+            text = soup.get_text(" ", strip=True)
 
-                # =========================
-                # COMPANY NAME
-                # =========================
-                if not company:
-                    if soup.title:
-                        company = soup.title.string.strip()
+            # COMPANY
+            if not company and soup.title:
+                company = soup.title.string.strip()
 
-                # =========================
-                # EMAIL
-                # =========================
-                if email == "not_found":
-                    emails = set()
+            # EMAIL
+            if email == "not_found":
+                emails = set()
 
-                    emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", res.text))
-                    emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text))
+                emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", res.text))
 
-                    # mailto links
-                    for a in soup.find_all("a", href=True):
-                        if "mailto:" in a["href"]:
-                            emails.add(a["href"].replace("mailto:", "").strip())
+                for a in soup.find_all("a", href=True):
+                    if "mailto:" in a["href"]:
+                        emails.add(a["href"].replace("mailto:", "").strip())
 
-                    # priority selection
-                    priority = ["info", "support", "contact", "sales"]
-                    for p in priority:
-                        for e in emails:
-                            if p in e.lower():
-                                email = e
-                                break
-                        if email != "not_found":
+                emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text))
+
+                priority = ["info", "support", "contact", "sales"]
+                selected = None
+
+                for p in priority:
+                    for e in emails:
+                        if p in e.lower():
+                            selected = e
                             break
+                    if selected:
+                        break
 
-                    if email == "not_found" and emails:
-                        email = list(emails)[0]
+                if selected:
+                    email = selected
+                elif emails:
+                    email = list(emails)[-1]  # footer-based fix
 
-                # =========================
-                # PHONE
-                # =========================
-                if phone == "not_found":
-                    phones = []
+            # PHONE
+            if phone == "not_found":
+                phones = []
 
-                    # tel links
-                    for a in soup.find_all("a", href=True):
-                        if "tel:" in a["href"]:
-                            num = re.sub(r"\D", "", a["href"])
-                            if len(num) >= 10:
-                                phones.append(num[-10:])
+                for a in soup.find_all("a", href=True):
+                    if "tel:" in a["href"]:
+                        num = re.sub(r"\D", "", a["href"])
+                        if len(num) >= 10:
+                            phones.append(num[-10:])
 
-                    # regex detection
-                    matches = re.findall(r"(?:\+?\d{1,3}[\s-]?)?\d{10}", text)
-                    for m in matches:
-                        clean = re.sub(r"\D", "", m)
-                        if len(clean) >= 10:
-                            phones.append(clean[-10:])
+                matches = re.findall(r"(?:\+?\d{1,3}[\s-]?)?\(?[6-9]\d{9}\)?", text)
+                for m in matches:
+                    clean = re.sub(r"\D", "", m)
+                    if len(clean) >= 10:
+                        phones.append(clean[-10:])
 
-                    # filter junk numbers
-                    valid = []
-                    for p in phones:
-                        if not any(x in p for x in ["00000", "12345", "99999"]):
-                            valid.append(p)
+                matches2 = re.findall(r"[6-9]\d{9}", res.text)
+                phones.extend(matches2)
 
-                    if valid:
-                        phone = valid[0]
+                phones = list(set(phones))
 
-                # =========================
-                # CEO / PERSON
-                # =========================
-                if person == "not_found":
-                    for line in text.split("."):
-                        if any(k in line.lower() for k in ["ceo", "founder", "director"]):
-                            if len(line) < 100:
-                                person = line.strip()
-                                break
+                if phones:
+                    phone = phones[0]
 
-                # =========================
-                # DESCRIPTION
-                # =========================
-                if description == "not_found":
-                    meta = soup.find("meta", attrs={"name": "description"})
-                    if meta and meta.get("content"):
-                        description = meta.get("content")
+            # DESCRIPTION
+            if not description:
+                meta = soup.find("meta", attrs={"name": "description"})
+                if meta and meta.get("content"):
+                    description = meta.get("content")
 
-            except:
-                continue
+        except:
+            continue
 
-        return {
-            "company": company,
-            "cin": "",
-            "url": url,
-            "email": email,
-            "phone": phone,
-            "ceo": person,
-            "description": description
-        }
+    # FINAL FALLBACK
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        html = res.text
 
-    except Exception as e:
-        return {
-            "company": "",
-            "cin": "",
-            "url": url,
-            "email": "",
-            "phone": "",
-            "ceo": "",
-            "description": "",
-            "error": str(e)
-        }
+        if email == "not_found":
+            emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", html)
+            if emails:
+                email = emails[-1]
 
-# =========================
-# SAVE TO EXCEL
-# =========================
+        if phone == "not_found":
+            phones = re.findall(r"[6-9]\d{9}", html)
+            if phones:
+                phone = phones[0]
+
+    except:
+        pass
+
+    return {
+        "company": company,
+        "cin": "",
+        "url": url,
+        "email": email,
+        "phone": phone,
+        "ceo": "",
+        "description": description
+    }
+
+# SAVE
 def save_to_excel(data):
     df = pd.DataFrame([data])
 
@@ -185,9 +165,7 @@ def save_to_excel(data):
     df.drop_duplicates(subset=["url"], inplace=True)
     df.to_excel(EXCEL_FILE, index=False)
 
-# =========================
-# MODE 1 → SINGLE URL
-# =========================
+# APIs
 class URLData(BaseModel):
     url: str
 
@@ -197,26 +175,20 @@ def scrape_url(data: URLData):
     save_to_excel(result)
     return result
 
-# =========================
-# MODE 1B → MULTIPLE URL
-# =========================
+
 class URLList(BaseModel):
     urls: list[str]
 
 @app.post("/scrape-multiple")
 def scrape_multiple(data: URLList):
     results = []
-
-    for url in data.urls:
+    for url in data.urls[:25]:
         result = scrape_site(url)
         save_to_excel(result)
         results.append(result)
-
     return results
 
-# =========================
-# MODE 2 → COMPANY + CIN
-# =========================
+
 class CompanyData(BaseModel):
     company: str
     cin: str
@@ -224,16 +196,11 @@ class CompanyData(BaseModel):
 @app.post("/scrape-company")
 def scrape_company(data: CompanyData):
     result = scrape_indiafilings(data.company, data.cin)
-
-    if not result:
-        return {"error": "Not found"}
-
-    save_to_excel(result)
+    if result:
+        save_to_excel(result)
     return result
 
-# =========================
-# MODE 3 → BULK UPLOAD
-# =========================
+
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
 
@@ -243,17 +210,23 @@ async def upload_file(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, buffer)
 
     companies = get_companies(file_path)
+    results = []
 
-    for c in companies:
-        result = scrape_indiafilings(c["Company Name"], c["CIN"])
-        if result:
-            save_to_excel(result)
+    for i, c in enumerate(companies):
+        if i >= 25:
+            break
 
-    return {"message": "Bulk processing done"}
+        try:
+            result = scrape_indiafilings(c["Company Name"], c["CIN"])
+            if result:
+                save_to_excel(result)
+                results.append(result)
+        except:
+            continue
 
-# =========================
-# DOWNLOAD EXCEL
-# =========================
+    return {"processed": len(results)}
+
+
 @app.get("/download")
 def download():
     return FileResponse(EXCEL_FILE, filename=EXCEL_FILE)

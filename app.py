@@ -7,7 +7,7 @@ import os
 # CONFIG
 # -----------------------------
 load_dotenv()
-API_URL = "http://127.0.0.1:8000"
+API_URL ="https://lead-extractor-8uc5.onrender.com"
 
 if not API_URL:
     st.error("API_URL not set")

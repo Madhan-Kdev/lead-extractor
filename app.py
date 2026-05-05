@@ -3,32 +3,29 @@ import requests
 from dotenv import load_dotenv
 import os
 
-
-# LOAD ENV
-
+# -----------------------------
+# CONFIG
+# -----------------------------
 load_dotenv()
-API_URL = os.getenv("API_URL")
-
-
-# VALIDATION
+API_URL = "http://127.0.0.1:8000"
 
 if not API_URL:
-    st.error("API_URL not set in .env file")
+    st.error("API_URL not set")
     st.stop()
 
 st.set_page_config(page_title="Lead Extractor", layout="centered")
 
-st.title(" Lead Extraction Tool")
+st.title("Lead Extraction Tool")
 
-
-# 1️ COMPANY + CIN
-
+# -----------------------------
+# 1️⃣ COMPANY + CIN
+# -----------------------------
 st.header("1 Company + CIN")
 
 company = st.text_input("Company Name")
 cin = st.text_input("CIN Number")
 
-if st.button("Extract Company Data", key="company_btn"):
+if st.button("Extract Company Data"):
     if not company or not cin:
         st.warning("Enter both fields")
     else:
@@ -43,91 +40,110 @@ if st.button("Extract Company Data", key="company_btn"):
                     st.success("Data fetched successfully")
                     st.json(res.json())
                 else:
-                    st.error(f"Error: {res.text}")
+                    st.error(res.text)
 
             except Exception as e:
                 st.error(f"Request failed: {e}")
 
+# -----------------------------
+# 2️⃣ WEBSITE URLs (MULTI-LINE INPUT)
+# -----------------------------
+st.header("2 Website URLs (Bulk Paste)")
 
-# 2️ WEBSITE URL
+urls_input = st.text_area(
+    "Paste multiple URLs (one per line)",
+    height=150
+)
 
-st.header("2 Website URL")
+if st.button("Extract Website Data"):
 
-url = st.text_input("Website URL")
+    if not urls_input.strip():
+        st.warning("Enter at least one URL")
 
-if st.button("Extract Website Data", key="url_btn"):
-    if not url:
-        st.warning("Enter URL")
     else:
-        with st.spinner("Scraping website..."):
-            try:
-                if not url.startswith("http"):
-                    url = "https://" + url
+        with st.spinner("Scraping websites..."):
 
+            try:
+                # 🔥 IMPORTANT: Send RAW TEXT (not JSON)
                 res = requests.post(
                     f"{API_URL}/scrape-url",
-                    json={"url": url}
+                    data=urls_input,
+                    headers={"Content-Type": "text/plain"}
                 )
 
                 if res.status_code == 200:
-                    st.success("Data extracted successfully")
-                    st.json(res.json())
+                    data = res.json()
+
+                    st.success(f"Processed: {data['processed']} URLs")
+                    st.json(data["data"])
+
+                    # 🔽 DOWNLOAD FILE
+                    download = requests.get(f"{API_URL}/download")
+
+                    st.download_button(
+                        label="⬇ Download Excel",
+                        data=download.content,
+                        file_name="leads.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
                 else:
-                    st.error(f"Error: {res.text}")
+                    st.error(res.text)
 
             except Exception as e:
                 st.error(f"Request failed: {e}")
 
-
-# 3️ BULK UPLOAD
-
+# -----------------------------
+# 3️⃣ UPLOAD EXCEL
+# -----------------------------
 st.header("3 Upload Excel")
 
 file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
-if st.button("Process File", key="upload_btn"):
+if st.button("Process File"):
+
     if file is None:
-        st.warning("Please upload a file first")
+        st.warning("Please upload a file")
+
     else:
-        with st.spinner("Processing bulk data..."):
+        with st.spinner("Processing..."):
             try:
                 files = {"file": file}
                 res = requests.post(f"{API_URL}/upload", files=files)
 
                 if res.status_code == 200:
-                    st.success(res.json())
+                    st.success("File processed successfully")
+                    st.json(res.json())
+
                 else:
-                    st.error(f"Error: {res.text}")
+                    st.error(res.text)
 
             except Exception as e:
                 st.error(f"Upload failed: {e}")
 
-
-# 4️ DOWNLOAD EXCEL
-
+# -----------------------------
+# 4️⃣ DOWNLOAD EXCEL
+# -----------------------------
 st.header("4 Download Output")
 
-if st.button("Get Excel File", key="download_btn"):
-    with st.spinner("Preparing download..."):
-        try:
-            res = requests.get(f"{API_URL}/download")
+if st.button("Download Latest Excel"):
+    try:
+        res = requests.get(f"{API_URL}/download")
 
-            if res.status_code == 200:
-                st.success("File ready")
+        if res.status_code == 200:
+            st.download_button(
+                label="⬇ Download Excel",
+                data=res.content,
+                file_name="leads.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.error("Download failed")
 
-                st.download_button(
-                    label=" Download Excel",
-                    data=res.content,
-                    file_name="leads.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else:
-                st.error("Download failed")
+    except Exception as e:
+        st.error(f"Download error: {e}")
 
-        except Exception as e:
-            st.error(f"Download error: {e}")
-
-
+# -----------------------------
 # INFO
-
-st.info(" Chrome Extension will automatically scrape data while browsing.")
+# -----------------------------
+st.info("Paste multiple URLs → click → download Excel ")

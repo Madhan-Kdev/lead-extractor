@@ -4,16 +4,19 @@
   "version": "1.0",
 
   "permissions": [
-    "tabs"
+    "tabs",
+    "activeTab",
+    "scripting"
+
   ],
 
   "host_permissions": [
     "<all_urls>",
-    "http://127.0.0.1:8000/*"
+    "https://lead-extractor-8uc5.onrender.com/scrape-url"
   ],
 
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js" 
   },
 
   "action": {

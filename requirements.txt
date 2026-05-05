@@ -1,9 +1,10 @@
 fastapi
 uvicorn
 pandas
-beautifulsoup4
-requests
-python-multipart
 openpyxl
-python-dotenv
+requests
+beautifulsoup4
+aiohttp
+python-multipart
 streamlit
+python-dotenv

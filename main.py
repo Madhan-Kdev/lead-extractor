@@ -1,29 +1,21 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-
 import pandas as pd
 import os
 import re
-import requests
-import time 
+import asyncio
+import aiohttp
 from bs4 import BeautifulSoup
 import shutil
-
 from indiafilings_scraper import scrape_indiafilings
 
-app = FastAPI(
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json"
-)
+app = FastAPI()
 
-@app.get("/")
-def home():
-    return {"message": "Lead Extractor API is running"}
-
+# -------------------------------
 # CORS
+# -------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,161 +26,170 @@ app.add_middleware(
 
 EXCEL_FILE = "leads.xlsx"
 
-# SCRAPER (FIXED)
-def scrape_site(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+@app.get("/")
+def home():
+    return {"message": "Lead Extractor API is running"}
 
-    pages = [
-        url,
-        url.rstrip("/") + "/contact",
-        url.rstrip("/") + "/contact-us",
-        url.rstrip("/") + "/contactus",
-        url.rstrip("/") + "/about",
-        url.rstrip("/") + "/about-us",
-        url.rstrip("/") + "/reach-us",
-        url.rstrip("/") + "/support",
-        url.rstrip("/") + "/get-in-touch"
+# -------------------------------
+# 🚀 FAST ASYNC SCRAPER
+# -------------------------------
+async def fetch_site(session, url):
+    try:
+        if not url.startswith("http"):
+            url = "https://" + url
+
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        pages = [
+            url,
+            url.rstrip("/") + "/contact",
+            url.rstrip("/") + "/contact-us",
+            url.rstrip("/") + "/contactus",
+            url.rstrip("/") + "/about",
+            url.rstrip("/") + "/about-us",
+            url.rstrip("/") + "/reach-us",
+            url.rstrip("/") + "/support",
+            url.rstrip("/") + "/get-in-touch"
+        ]
+
+        email = "not_found"
+        phone = "not_found"
+        description = ""
+        company = ""
+
+        full_text = ""
+
+        for page in pages:
+            for attempt in range(2):  # 🔁 retry once
+                try:
+                    async with session.get(page, headers=headers, timeout=5) as res:
+                        html = await res.text()
+                        full_text += html
+
+                        soup = BeautifulSoup(html, "html.parser")
+                        text = soup.get_text(" ", strip=True)
+
+                        # -------------------------------
+                        # COMPANY
+                        # -------------------------------
+                        if not company and soup.title:
+                            company = soup.title.string.strip()
+
+                        # -------------------------------
+                        # EMAIL (IMPROVED)
+                        # -------------------------------
+                        if email == "not_found":
+                            emails = set()
+
+                            # from HTML
+                            emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", html))
+
+                            # mailto links
+                            for a in soup.find_all("a", href=True):
+                                if "mailto:" in a["href"]:
+                                    emails.add(a["href"].replace("mailto:", "").strip())
+
+                            # from visible text
+                            emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text))
+
+                            # filter junk emails
+                            ignore = ["example", "test", "sample", "yourdomain"]
+                            emails = [
+                                e for e in emails
+                                if not any(k in e.lower() for k in ignore)
+                            ]
+
+                            # prioritize business emails
+                            priority_keywords = ["contact", "sales", "support", "admin"]
+                            priority_emails = [
+                                e for e in emails
+                                if any(k in e.lower() for k in priority_keywords)
+                            ]
+
+                            if priority_emails:
+                                email = priority_emails[0]
+                            elif emails:
+                                email = emails[0]
+
+                        # -------------------------------
+                        # PHONE (IMPROVED)
+                        # -------------------------------
+                        if phone == "not_found":
+                            phone_matches = re.findall(r"(\+?\d[\d\s\-]{8,}\d)", html)
+
+                            cleaned_numbers = []
+                            for p in phone_matches:
+                                num = re.sub(r"\D", "", p)
+                                if 9 <= len(num) <= 13:
+                                    cleaned_numbers.append(num)
+
+                            if cleaned_numbers:
+                                phone = cleaned_numbers[0]
+
+                        # -------------------------------
+                        # DESCRIPTION
+                        # -------------------------------
+                        if not description:
+                            meta = soup.find("meta", attrs={"name": "description"})
+                            if meta and meta.get("content"):
+                                description = meta.get("content")
+
+                        break  # success → exit retry loop
+
+                except:
+                    if attempt == 1:
+                        continue
+
+        return {
+            "company": company,
+            "cin": "",
+            "url": url,
+            "email": email,
+            "phone": phone,
+            "ceo": "",
+            "description": description
+        }
+
+    except Exception as e:
+        return {"url": url, "error": str(e)}
+
+
+# -------------------------------
+# 🚀 MULTI URL FAST API
+# -------------------------------
+@app.post("/scrape-url")
+async def scrape_url(request: Request):
+
+    body = await request.body()
+    raw_input = body.decode("utf-8")
+
+    urls = [
+        u.strip()
+        for u in raw_input.replace("\r", "\n").split("\n")
+        if u.strip()
     ]
 
-    email = "not_found"
-    phone = "not_found"
-    description = ""
-    company = ""
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_site(session, url) for url in urls]
 
-    for page in pages:
-        try:
-            res = requests.get(page, headers=headers, timeout=5)
-            soup = BeautifulSoup(res.text, "html.parser")
-            text = soup.get_text(" ", strip=True)
+        # 🔥 PARALLEL EXECUTION
+        results = await asyncio.gather(*tasks)
 
-            # COMPANY
-            if not company and soup.title:
-                company = soup.title.string.strip()
-
-            # EMAIL
-            if email == "not_found":
-                emails = set()
-
-                emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", res.text))
-
-                for a in soup.find_all("a", href=True):
-                    if "mailto:" in a["href"]:
-                        emails.add(a["href"].replace("mailto:", "").strip())
-
-                emails.update(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text))
-
-                priority = ["info", "support", "contact", "sales"]
-                selected = None
-
-                for p in priority:
-                    for e in emails:
-                        if p in e.lower():
-                            selected = e
-                            break
-                    if selected:
-                        break
-
-                if selected:
-                    email = selected
-                elif emails:
-                    email = list(emails)[-1]  # footer-based fix
-
-            # PHONE
-            if phone == "not_found":
-                phones = []
-
-                for a in soup.find_all("a", href=True):
-                    if "tel:" in a["href"]:
-                        num = re.sub(r"\D", "", a["href"])
-                        if len(num) >= 10:
-                            phones.append(num[-10:])
-
-                matches = re.findall(r"(?:\+?\d{1,3}[\s-]?)?\(?[6-9]\d{9}\)?", text)
-                for m in matches:
-                    clean = re.sub(r"\D", "", m)
-                    if len(clean) >= 10:
-                        phones.append(clean[-10:])
-
-                matches2 = re.findall(r"[6-9]\d{9}", res.text)
-                phones.extend(matches2)
-
-                phones = list(set(phones))
-
-                if phones:
-                    phone = phones[0]
-
-            # DESCRIPTION
-            if not description:
-                meta = soup.find("meta", attrs={"name": "description"})
-                if meta and meta.get("content"):
-                    description = meta.get("content")
-
-        except:
-            continue
-
-    # FINAL FALLBACK
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        html = res.text
-
-        if email == "not_found":
-            emails = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", html)
-            if emails:
-                email = emails[-1]
-
-        if phone == "not_found":
-            phones = re.findall(r"[6-9]\d{9}", html)
-            if phones:
-                phone = phones[0]
-
-    except:
-        pass
-
-    return {
-        "company": company,
-        "cin": "",
-        "url": url,
-        "email": email,
-        "phone": phone,
-        "ceo": "",
-        "description": description
-    }
-
-# SAVE
-def save_to_excel(data):
-    df = pd.DataFrame([data])
-
-    if os.path.exists(EXCEL_FILE):
-        old = pd.read_excel(EXCEL_FILE)
-        df = pd.concat([old, df], ignore_index=True)
-
+    # ✅ SAVE ONCE (FAST)
+    df = pd.DataFrame(results)
     df.drop_duplicates(subset=["url"], inplace=True)
     df.to_excel(EXCEL_FILE, index=False)
 
-# APIs
-class URLData(BaseModel):
-    url: str
-
-@app.post("/scrape-url")
-def scrape_url(data: URLData):
-    result = scrape_site(data.url)
-    save_to_excel(result)
-    return result
+    return {
+        "processed": len(results),
+        "data": results,
+        "file": EXCEL_FILE
+    }
 
 
-class URLList(BaseModel):
-    urls: list[str]
-
-@app.post("/scrape-multiple")
-def scrape_multiple(data: URLList):
-    results = []
-    for url in data.urls[:25]:
-        result = scrape_site(url)
-        save_to_excel(result)
-        results.append(result)
-    return results
-
-
+# -------------------------------
+# COMPANY + CIN
+# -------------------------------
 class CompanyData(BaseModel):
     company: str
     cin: str
@@ -197,10 +198,14 @@ class CompanyData(BaseModel):
 def scrape_company(data: CompanyData):
     result = scrape_indiafilings(data.company, data.cin)
     if result:
-        save_to_excel(result)
+        df = pd.DataFrame([result])
+        df.to_excel(EXCEL_FILE, index=False)
     return result
 
 
+# -------------------------------
+# 📂 UPLOAD FILE (FAST)
+# -------------------------------
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
 
@@ -208,85 +213,45 @@ async def upload_file(file: UploadFile = File(...)):
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    
+
     df = pd.read_excel(file_path)
     df.columns = df.columns.str.strip().str.upper()
 
-    #companies = get_companies(file_path)
     results = []
-
-    #CASE 1 URL BASED FILE 
 
     if "URL" in df.columns:
         urls = df["URL"].dropna().tolist()
-        print(f"Detected URL file with {len(urls)} records")
-        batch_size = 25
-        for i in range(0,len(urls),batch_size):
-            batch = urls[i:i+batch_size]
 
-            print(f"Processing batch {i//25 + 1}")
-            
-            for url in batch:
-                try:
-                    url = str(url).strip()
-                    
-                    if not str(url).startswith("http"):
-                        url = "https://"+ url
+        async with aiohttp.ClientSession() as session:
+            tasks = [fetch_site(session, str(url)) for url in urls]
+            results = await asyncio.gather(*tasks)
 
-                    result = scrape_site(url)
-
-                    if result:
-                        save_to_excel(result)
-                        results.append(result)
-                except Exception as e:
-                    print("URL Error:", e)
-                    continue
-            
-            if i + batch_size < len(urls):
-                print("Sleeping for 20 seconds")
-
-                time.sleep(20)
-
-#CASE-2 COMPANY + CIN 
     elif "COMPANY NAME" in df.columns and "CIN" in df.columns:
+        companies = df.to_dict(orient="records")
 
-        companies = df.to_dict(orient = "records")
-        print(f"Detected CIN file with {len(companies)} records")
-
-        batch_size = 25
-
-        for i in range(0, len(companies),batch_size):
-            batch = companies[i:i+batch_size]
-
-            print(f"Processing batch {i//25 + 1}")
-
-            for c in batch:
-                try:
-                    result = scrape_indiafilings(
-                        c["Company Name"], c["CIN"]
-                    )
-
-                    if result:
-                        save_to_excel(result)
-                        results.append(result)
-
-                except Exception as e:
-                    print("CIN Error:",e)
-                    continue
-
-            if i + batch_size < len(companies):
-                print("Sleeping for 20 seconds")
-                time.sleep(20)
-
+        for c in companies:
+            try:
+                result = scrape_indiafilings(c["COMPANY NAME"], c["CIN"])
+                if result:
+                    results.append(result)
+            except:
+                continue
     else:
         return {"error": "Invalid file format"}
-    
+
+    # SAVE ONCE
+    df = pd.DataFrame(results)
+    df.to_excel(EXCEL_FILE, index=False)
+
     return {
         "processed": len(results),
-        "message": "Bulk processing completed"
+        "file": EXCEL_FILE
     }
 
 
+# -------------------------------
+# DOWNLOAD
+# -------------------------------
 @app.get("/download")
 def download():
     return FileResponse(EXCEL_FILE, filename=EXCEL_FILE)

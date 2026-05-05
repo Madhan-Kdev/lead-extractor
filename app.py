@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import time
 from dotenv import load_dotenv
 import os
 
@@ -7,7 +8,8 @@ import os
 # CONFIG
 # -----------------------------
 load_dotenv()
-API_URL ="https://lead-extractor-8uc5.onrender.com"
+
+API_URL = "https://lead-extractor-8uc5.onrender.com"
 
 if not API_URL:
     st.error("API_URL not set")
@@ -33,14 +35,16 @@ if st.button("Extract Company Data"):
             try:
                 res = requests.post(
                     f"{API_URL}/scrape-company",
-                    json={"company": company, "cin": cin}
+                    json={"company": company, "cin": cin},
+                    timeout=30
                 )
 
                 if res.status_code == 200:
                     st.success("Data fetched successfully")
                     st.json(res.json())
                 else:
-                    st.error(res.text)
+                    st.error(f"API Error: {res.status_code}")
+                    st.text(res.text)
 
             except Exception as e:
                 st.error(f"Request failed: {e}")
@@ -64,31 +68,62 @@ if st.button("Extract Website Data"):
         with st.spinner("Scraping websites..."):
 
             try:
-                # 🔥 IMPORTANT: Send RAW TEXT (not JSON)
-                res = requests.post(
-                    f"{API_URL}/scrape-url",
-                    data=urls_input,
-                    headers={"Content-Type": "text/plain"}
-                )
+                # 🔥 Wake up Render (avoid cold start issue)
+                try:
+                    requests.get(f"{API_URL}/health", timeout=10)
+                except:
+                    pass
 
-                if res.status_code == 200:
-                    data = res.json()
+                # 🔥 Retry logic (3 attempts)
+                res = None
+                for i in range(3):
+                    try:
+                        res = requests.post(
+                            f"{API_URL}/scrape-url",
+                            data=urls_input,
+                            headers={"Content-Type": "text/plain"},
+                            timeout=60
+                        )
 
-                    st.success(f"Processed: {data['processed']} URLs")
-                    st.json(data["data"])
+                        if res.status_code == 200:
+                            break
 
-                    # 🔽 DOWNLOAD FILE
-                    download = requests.get(f"{API_URL}/download")
+                    except:
+                        pass
 
-                    st.download_button(
-                        label="⬇ Download Excel",
-                        data=download.content,
-                        file_name="leads.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    time.sleep(5)
+
+                # 🔥 Handle response safely
+                if res is None:
+                    st.error("Server not responding")
+                
+                elif res.status_code != 200:
+                    st.error(f"API Error: {res.status_code}")
+                    st.text(res.text)
 
                 else:
-                    st.error(res.text)
+                    try:
+                        data = res.json()
+
+                        st.success(f"Processed: {data['processed']} URLs")
+                        st.json(data["data"])
+
+                        # 🔽 DOWNLOAD FILE
+                        download = requests.get(f"{API_URL}/download", timeout=30)
+
+                        if download.status_code == 200:
+                            st.download_button(
+                                label="⬇ Download Excel",
+                                data=download.content,
+                                file_name="leads.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        else:
+                            st.warning("Download failed")
+
+                    except:
+                        st.error("Invalid response from server")
+                        st.text(res.text)
 
             except Exception as e:
                 st.error(f"Request failed: {e}")
@@ -109,14 +144,19 @@ if st.button("Process File"):
         with st.spinner("Processing..."):
             try:
                 files = {"file": file}
-                res = requests.post(f"{API_URL}/upload", files=files)
+
+                res = requests.post(
+                    f"{API_URL}/upload",
+                    files=files,
+                    timeout=60
+                )
 
                 if res.status_code == 200:
                     st.success("File processed successfully")
                     st.json(res.json())
-
                 else:
-                    st.error(res.text)
+                    st.error(f"API Error: {res.status_code}")
+                    st.text(res.text)
 
             except Exception as e:
                 st.error(f"Upload failed: {e}")
@@ -128,7 +168,7 @@ st.header("4 Download Output")
 
 if st.button("Download Latest Excel"):
     try:
-        res = requests.get(f"{API_URL}/download")
+        res = requests.get(f"{API_URL}/download", timeout=30)
 
         if res.status_code == 200:
             st.download_button(
@@ -146,4 +186,4 @@ if st.button("Download Latest Excel"):
 # -----------------------------
 # INFO
 # -----------------------------
-st.info("Paste multiple URLs → click → download Excel ")
+st.info("Paste multiple URLs → click → download Excel")
